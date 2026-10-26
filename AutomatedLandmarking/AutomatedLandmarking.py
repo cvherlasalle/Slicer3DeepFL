@@ -577,6 +577,18 @@ class AutomatedLandmarkingWidget(ScriptedLoadableModuleWidget, VTKObservationMix
             detail_lines.append(status["description"])
         if status["landmark_count"]:
             detail_lines.append("Landmarks: {}".format(status["landmark_count"]))
+        if status.get("model_version"):
+            detail_lines.append("Weight version: {}".format(status["model_version"]))
+        checksum_status = status.get("checksum_status")
+        if status.get("expected_sha256"):
+            detail_lines.append(
+                "SHA-256 (expected): {} ({})".format(
+                    status["expected_sha256"],
+                    checksum_status.replace("_", " "),
+                )
+            )
+        elif checksum_status == "not_configured":
+            detail_lines.append("SHA-256: no expected digest configured")
         if status["is_available"] and wh:
             detail_lines.append("Weights file: {}".format(wh))
         elif dh and not status["is_available"]:

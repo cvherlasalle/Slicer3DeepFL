@@ -14,7 +14,9 @@ Example:
 """
 
 from pathlib import Path
+import hashlib
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -136,6 +138,37 @@ def _validate_model_weights(model_path, require_zip=False):
     return True, None
 
 
+def _sha256_file(model_path):
+    """Calculate a file's SHA-256 digest without loading it all into memory."""
+    digest = hashlib.sha256()
+    with Path(model_path).open("rb") as model_file:
+        for chunk in iter(lambda: model_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_expected_sha256(value):
+    if value is None:
+        return None
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-fA-F]{64}", value) is None:
+        raise ValueError("predict.model_sha256 must be a 64-character hexadecimal SHA-256 digest.")
+    return value.lower()
+
+
+def _validate_model_digest(model_path, expected_sha256):
+    if expected_sha256 is None:
+        return True, None
+    try:
+        actual_sha256 = _sha256_file(model_path)
+    except OSError as exc:
+        return False, "Could not calculate model weights SHA-256: {}".format(exc)
+    if actual_sha256 != expected_sha256:
+        return False, "Model weights SHA-256 mismatch (expected {}, got {}).".format(
+            expected_sha256, actual_sha256
+        )
+    return True, None
+
+
 def _weights_require_zip(model_path):
     """BioFace3D caches are zip archives; DTU Deep-MVLM weights are legacy pickle files."""
     try:
@@ -149,7 +182,10 @@ def get_model_status(model_dir):
     """Return metadata and availability information for a bundled MVCNN model."""
     model_dir = Path(model_dir)
     config_dict = _load_config_dict(model_dir)
-    model_ref = ((config_dict.get("predict") or {}).get("model_pth_or_url") or "").strip()
+    predict_config = config_dict.get("predict") or {}
+    model_ref = (predict_config.get("model_pth_or_url") or "").strip()
+    expected_sha256 = _validate_expected_sha256(predict_config.get("model_sha256"))
+    model_version = predict_config.get("model_version")
     bundled_path = model_dir / "model_best.pth"
     cached_path = get_cached_model_path(model_dir)
     candidate_path = Path(model_ref).expanduser() if model_ref else None
@@ -179,6 +215,8 @@ def get_model_status(model_dir):
             resolved_path,
             require_zip=_weights_require_zip(resolved_path),
         )
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(resolved_path, expected_sha256)
         if not is_valid:
             is_available = False
 
@@ -200,6 +238,17 @@ def get_model_status(model_dir):
         "availability_source": availability_source,
         "download_url": download_url,
         "validation_error": validation_error,
+        "model_version": model_version,
+        "expected_sha256": expected_sha256,
+        "checksum_status": (
+            "not_configured"
+            if expected_sha256 is None
+            else (
+                "verified"
+                if is_available
+                else ("mismatch" if "SHA-256 mismatch" in (validation_error or "") else "unverified")
+            )
+        ),
         "weights_size_human": weights_size_human,
         "download_size_human": download_size_human,
     }
@@ -229,8 +278,11 @@ def remove_cached_model(model_dir):
 def _ensure_model_weights(model_dir, config_dict):
     """Resolve already-available model weights, or raise if the model has not been downloaded yet."""
     model_path = model_dir / "model_best.pth"
+    expected_sha256 = _validate_expected_sha256((config_dict.get("predict") or {}).get("model_sha256"))
     if model_path.is_file():
         is_valid, validation_error = _validate_model_weights(model_path)
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(model_path, expected_sha256)
         if not is_valid:
             raise RuntimeError(
                 "Bundled model weights for {} are invalid: {}".format(model_dir.name, validation_error)
@@ -242,6 +294,8 @@ def _ensure_model_weights(model_dir, config_dict):
         is_valid, validation_error = _validate_model_weights(
             cached_path, require_zip=_weights_require_zip(cached_path)
         )
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(cached_path, expected_sha256)
         if not is_valid:
             raise RuntimeError(
                 "Cached model weights for {} are invalid: {}".format(model_dir.name, validation_error)
@@ -257,6 +311,8 @@ def _ensure_model_weights(model_dir, config_dict):
     candidate_path = Path(str(model_ref)).expanduser()
     if candidate_path.is_file():
         is_valid, validation_error = _validate_model_weights(candidate_path)
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(candidate_path, expected_sha256)
         if not is_valid:
             raise RuntimeError(
                 "Model weights at {} are invalid: {}".format(candidate_path, validation_error)
@@ -289,19 +345,25 @@ def download_model(model_dir, force=False):
     if not status["download_url"]:
         raise FileNotFoundError(f"No download URL configured for {model_dir.name}")
     force = force or (status["availability_source"] == "cached" and bool(status.get("validation_error")))
+    config_dict = _load_config_dict(model_dir)
+    expected_sha256 = _validate_expected_sha256((config_dict.get("predict") or {}).get("model_sha256"))
     return _download_model_weights(
         status["download_url"],
         status["cached_weights_path"],
         force=force,
+        expected_sha256=expected_sha256,
     )
 
 
-def _download_model_weights(url, destination, force=False):
+def _download_model_weights(url, destination, force=False, expected_sha256=None):
     """Download model weights once and reuse the cached file on later runs."""
+    expected_sha256 = _validate_expected_sha256(expected_sha256)
     if destination.is_file() and destination.stat().st_size > 0 and not force:
         is_valid, validation_error = _validate_model_weights(
             destination, require_zip=_weights_require_zip(destination)
         )
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(destination, expected_sha256)
         if is_valid:
             return destination
         force = True
@@ -317,16 +379,14 @@ def _download_model_weights(url, destination, force=False):
                 "curl is required to download 3DeepFL model weights on this system, but it was not found on PATH."
             )
         _download_with_curl(curl_exe, url, partial_path)
-        partial_path.replace(destination)
         is_valid, validation_error = _validate_model_weights(
-            destination, require_zip=_weights_require_zip(destination)
+            partial_path, require_zip=_weights_require_zip(partial_path)
         )
+        if is_valid:
+            is_valid, validation_error = _validate_model_digest(partial_path, expected_sha256)
         if not is_valid:
-            try:
-                destination.unlink()
-            except OSError:
-                pass
             raise RuntimeError(f"Downloaded checkpoint is invalid: {validation_error}")
+        partial_path.replace(destination)
         return destination
     except Exception as exc:
         if partial_path.exists():
