@@ -136,6 +136,11 @@ For NVIDIA GPU acceleration, the extension installs GPU-enabled PyTorch from the
   - Re-check the **5 seed landmark order** used for standardization (use the reference guide image in the module UI).
   - To sanity-check alignment, compare your standardized mesh to the **bundled reference** (it is loaded into the scene by the standardization module but hidden by default; you can show/hide it from the Data/Subject Hierarchy tree).
 
+## Demonstration videos
+
+- [Single-mesh workflow](Demos/demo_3deepFL_single_tab.mp4)
+- [Batch workflow](Demos/demo_3deepFL_batch_tab.mp4)
+
 ## Screenshots
 
 Face standardization: before and after template alignment.
