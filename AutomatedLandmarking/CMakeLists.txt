@@ -15,6 +15,7 @@ set(MODULE_PYTHON_RESOURCES
   Helpers/__init__.py
   Helpers/mesh_conversion.py
   Helpers/fiducial_creation.py
+  Helpers/landmarks_io.py
   )
 
 # Bundled mvcnn package - Python code + model configs

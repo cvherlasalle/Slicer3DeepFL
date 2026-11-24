@@ -163,6 +163,6 @@ Links: [ScienceDirect](https://www.sciencedirect.com/science/article/pii/S016926
 
 ## License and patents
 
-Released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE.txt).
 
 To the best of our knowledge, this extension is not covered by asserted patents. If you are aware of a relevant patent claim, please open an issue so the catalog text can be updated.
